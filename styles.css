@@ -1,0 +1,285 @@
+/* ─── Split Switcher ─────────────────────────────────────────────────────────
+   nav-header lives as a direct child of workspace-leaf-content (same as core
+   Bookmarks widget). Items use Obsidian's .tree-item-self class so all
+   padding, font, color, radius, and hover/active states come from the theme.
+─────────────────────────────────────────────────────────────────────────── */
+
+/* ─── View content ───────────────────────────────────────────────────────── */
+
+/* Match the padding Obsidian applies to bookmarks' view-content (app.css:14694).
+   Obsidian's own sidebar rules supply height: 100% and overflow: auto. */
+.workspace-leaf-content[data-type="split-switcher-view"] .view-content {
+  padding: var(--size-4-1) var(--size-4-3) var(--size-4-8);
+  user-select: none;
+}
+
+/* ─── List container ─────────────────────────────────────────────────────── */
+
+/* ss-list is a plain block; view-content's overflow: auto handles scrolling. */
+.ss-list {}
+
+/* ─── Empty state ────────────────────────────────────────────────────────── */
+
+.ss-empty {
+  padding: var(--size-4-4) var(--size-4-3);
+  text-align: center;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.ss-empty-hint {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  margin-top: var(--size-4-2);
+}
+
+/* ─── Split item ─────────────────────────────────────────────────────────── */
+
+.ss-split-item {
+  margin: 0;
+}
+
+/* Header row — tree-item-self supplies padding, font, color, radius, hover/active */
+.ss-split-hdr {
+  align-items: center;          /* override tree-item-self's baseline */
+  gap: var(--size-4-1);
+  padding-inline-start: var(--size-4-1);  /* hug the left edge as a parent row */
+  transition: background 80ms;
+}
+
+/* Chevron (right or down) */
+.ss-split-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  color: var(--nav-collapse-icon-color, var(--text-muted));
+}
+
+.ss-split-chevron svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Name — tree-item-inner supplies font, weight, color; we just add overflow */
+.ss-split-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Active split: boost weight on the name */
+.ss-split-item--active > .ss-split-hdr .ss-split-name {
+  font-weight: var(--nav-item-weight-active, 600);
+}
+
+/* Three-dots menu button — always in layout, faded until hovered */
+.ss-split-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms, background 80ms, color 80ms;
+}
+
+.ss-split-menu-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.ss-split-hdr:hover .ss-split-menu-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ss-split-menu-btn:hover {
+  background: var(--background-modifier-active-hover);
+  color: var(--text-normal);
+}
+
+/* ─── Expanded content (leaves + tabs inside active split) ───────────────── */
+
+.ss-split-content {
+  padding-bottom: var(--size-4-1);
+}
+
+.ss-leaf-empty-msg {
+  padding: var(--size-4-1) var(--size-4-3) var(--size-4-1) 36px;
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: var(--font-ui-smaller);
+}
+
+/* ─── Leaf section ───────────────────────────────────────────────────────── */
+
+.ss-leaf {
+  margin-top: var(--size-4-1);
+}
+
+/* "Leaf N" uppercase label */
+.ss-leaf-label {
+  padding: var(--size-4-1) var(--size-4-3) 2px 28px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.ss-leaf-tabs {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Tab row ────────────────────────────────────────────────────────────── */
+
+/* tree-item-self supplies padding, font, color, radius, hover (.is-clickable
+   supplies cursor). We override align, gap, and indent. */
+.ss-tab {
+  align-items: center;    /* override tree-item-self's baseline */
+  gap: var(--size-4-2);
+  padding-inline-start: 40px;   /* indent, overrides tree-item-self's inline-start */
+  min-width: 0;
+  transition: background 80ms;
+}
+
+/* Icon */
+.ss-tab-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.ss-tab-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.ss-tab.is-active .ss-tab-icon {
+  color: var(--text-accent);
+}
+
+/* Title */
+.ss-tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-tab.is-active .ss-tab-title {
+  color: var(--text-accent);
+}
+
+/* Pin indicator */
+.ss-tab-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.ss-tab-pin svg {
+  width: 11px;
+  height: 11px;
+}
+
+.ss-tab.is-active .ss-tab-pin {
+  color: var(--text-accent);
+  opacity: 0.8;
+}
+
+/* Close (×) — hidden until tab row hovered */
+.ss-tab-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  color: var(--text-muted);
+  transition: background 80ms, color 80ms;
+}
+
+.ss-tab-close svg {
+  width: 11px;
+  height: 11px;
+}
+
+.ss-tab:hover .ss-tab-close {
+  display: flex;
+}
+
+.ss-tab-close:hover {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+/* ─── Drag and drop ──────────────────────────────────────────────────────── */
+
+.ss-tab[draggable="true"] {
+  cursor: grab;
+}
+
+.ss-tab[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.ss-tab--dragging {
+  opacity: 0.35;
+}
+
+.ss-tab--drop-before {
+  box-shadow: inset 0 2px 0 0 var(--color-accent);
+}
+
+.ss-tab--drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--color-accent);
+}
+
+/* Saved tab (non-active split) — slightly dimmer, no close button */
+.ss-tab--saved {
+  opacity: 0.75;
+}
+
+.ss-tab--saved:hover {
+  opacity: 1;
+}
+
+/* Empty pane placeholder */
+.ss-tab-empty-msg {
+  padding: var(--nav-item-padding, var(--size-4-2) var(--size-4-3));
+  padding-inline-start: 40px;
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: var(--font-ui-smaller);
+}
+
+/* ─── Inline rename input ────────────────────────────────────────────────── */
+
+.ss-rename-input {
+  width: 100%;
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border-focus);
+  border-radius: 3px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  padding: 1px 5px;
+  outline: none;
+  box-sizing: border-box;
+}
