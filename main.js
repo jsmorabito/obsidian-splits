@@ -148,6 +148,11 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     await this.loadSettings();
     this.registerView(VIEW_TYPE, (leaf) => new SplitSwitcherView(leaf, this));
     this.addRibbonIcon("panels-top-left", "Splits", () => this.activateView());
+    this.addCommand({
+      id: "open-splits-widget",
+      name: "Open Splits widget",
+      callback: () => this.activateView(),
+    });
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.splits.length === 0)
         this.captureCurrentAsFirstSplit();
