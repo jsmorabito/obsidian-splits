@@ -1,7 +1,7 @@
 {
   "id": "obsidian-split-switcher",
   "name": "Splits",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.0.1",
   "description": "A sidebar widget to manage, name, and switch between workspace splits (layouts). View all open leaves and their tabs at a glance.",
   "author": "John",
