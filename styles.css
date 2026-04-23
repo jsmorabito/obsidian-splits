@@ -231,6 +231,27 @@
 
 /* ─── Drag and drop ──────────────────────────────────────────────────────── */
 
+/* Split drag-to-reorder */
+.ss-split-hdr[draggable="true"] {
+  cursor: grab;
+}
+
+.ss-split-hdr[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.ss-split-item--dragging > .ss-split-hdr {
+  opacity: 0.35;
+}
+
+.ss-split-item--drop-before > .ss-split-hdr {
+  box-shadow: inset 0 2px 0 0 var(--color-accent);
+}
+
+.ss-split-item--drop-after > .ss-split-hdr {
+  box-shadow: inset 0 -2px 0 0 var(--color-accent);
+}
+
 .ss-tab[draggable="true"] {
   cursor: grab;
 }
@@ -267,6 +288,25 @@
   color: var(--text-faint);
   font-style: italic;
   font-size: var(--font-ui-smaller);
+}
+
+/* ─── Split-switch overlay ───────────────────────────────────────────────── */
+
+/* Covers the main content area during a layout swap to hide the flash.
+   Positioned by JS to match the rootSplit bounding rect. */
+.ss-layout-overlay {
+  position: fixed;
+  /* fallback if JS doesn't set explicit bounds */
+  inset: 0;
+  background: var(--background-primary);
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+
+.ss-layout-overlay--out {
+  opacity: 0;
 }
 
 /* ─── Inline rename input ────────────────────────────────────────────────── */

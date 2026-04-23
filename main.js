@@ -32,7 +32,8 @@ var import_obsidian = require("obsidian");
 var VIEW_TYPE = "split-switcher-view";
 var DEFAULT_SETTINGS = {
   splits: [],
-  activeSplitId: null
+  activeSplitId: null,
+  expandedSplitIds: []
 };
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -82,6 +83,29 @@ function parseLayoutLeafGroups(layout) {
   traverse(layout.main);
   return result;
 }
+function setActiveTabInLayout(layout, filePath) {
+  const clone = JSON.parse(JSON.stringify(layout));
+  function findAndSet(node) {
+    if (!node) return false;
+    if (node.type === "tabs" && Array.isArray(node.children)) {
+      const idx = node.children.findIndex(
+        (c) => c.type === "leaf" && c.state && c.state.state && c.state.state.file === filePath
+      );
+      if (idx !== -1) {
+        node.currentTab = idx;
+        return true;
+      }
+    }
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) {
+        if (findAndSet(child)) return true;
+      }
+    }
+    return false;
+  }
+  findAndSet(clone.main);
+  return clone;
+}
 function emptyMainLayout(baseLayout) {
   return {
     ...baseLayout,
@@ -127,7 +151,6 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.splits.length === 0)
         this.captureCurrentAsFirstSplit();
-      this.activateView();
     });
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
@@ -146,9 +169,15 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
   // ── Settings ──────────────────────────────────────────────────────────────
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // Restore expanded state from persisted IDs
+    this.expandedSplits = new Set(this.settings.expandedSplitIds ?? []);
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  saveExpandedState() {
+    this.settings.expandedSplitIds = Array.from(this.expandedSplits);
+    this.saveSettings();
   }
   // ── View ──────────────────────────────────────────────────────────────────
   async activateView() {
@@ -190,7 +219,7 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     this.settings.splits.push(split);
     this.settings.activeSplitId = split.id;
     this.expandedSplits.add(split.id);
-    this.saveSettings();
+    this.saveExpandedState();
   }
   /** Snapshot the current workspace into whichever split is active. */
   autoSaveActiveSplit() {
@@ -214,14 +243,56 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     this.settings.splits.push(newSplit);
     this.settings.activeSplitId = newSplit.id;
     this.expandedSplits.add(newSplit.id);
+    this.saveExpandedState();
     const freshLayout = emptyMainLayout(this.app.workspace.getLayout());
-    this.app.workspace.changeLayout(freshLayout);
+    await this.applyLayoutWithFade(freshLayout);
     setTimeout(() => {
       newSplit.layout = this.app.workspace.getLayout();
       this.saveSettings();
-    }, 200);
+    }, 300);
     this.release(400);
     await this.saveSettings();
+    this.refreshView();
+  }
+  /** Cover the main content area with an overlay, swap the layout, then fade the overlay out.
+   *  The overlay is independent of Obsidian's DOM so changeLayout can't undo it. */
+  async applyLayoutWithFade(layout) {
+    const rootEl = this.app.workspace.rootSplit?.containerEl;
+    const rect = rootEl?.getBoundingClientRect();
+    // Create overlay sized to exactly the main content area
+    const overlay = document.body.createDiv({ cls: "ss-layout-overlay" });
+    if (rect) {
+      overlay.style.top = rect.top + "px";
+      overlay.style.left = rect.left + "px";
+      overlay.style.width = rect.width + "px";
+      overlay.style.height = rect.height + "px";
+    }
+    // One frame for the overlay to paint before we swap the layout
+    await new Promise((r) => requestAnimationFrame(r));
+    // Swap only the center main — sidebars stay as-is
+    const currentLayout = this.app.workspace.getLayout();
+    this.app.workspace.changeLayout({ ...currentLayout, main: layout.main });
+    // Small settle pause, then fade the overlay out to reveal the new layout
+    await new Promise((r) => setTimeout(r, 30));
+    overlay.classList.add("ss-layout-overlay--out");
+    setTimeout(() => overlay.remove(), 180);
+  }
+  /** Switch to a split and immediately open a specific file tab — single click. */
+  async switchToSplitAndOpenFile(id, filePath) {
+    const rec = this.settings.splits.find((s) => s.id === id);
+    if (!rec) return;
+    if (id !== this.settings.activeSplitId) {
+      this.autoSaveActiveSplit();
+      this.suppress();
+      this.settings.activeSplitId = id;
+      this.expandedSplits.add(id);
+      this.saveExpandedState();
+    }
+    if (rec.layout) {
+      const layout = filePath ? setActiveTabInLayout(rec.layout, filePath) : rec.layout;
+      await this.applyLayoutWithFade(layout);
+    }
+    this.release(400);
     this.refreshView();
   }
   /** Switch to a previously saved split. */
@@ -235,9 +306,9 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     this.suppress();
     this.settings.activeSplitId = id;
     this.expandedSplits.add(id);
-    await this.saveSettings();
+    this.saveExpandedState();
     if (rec.layout) {
-      this.app.workspace.changeLayout(rec.layout);
+      await this.applyLayoutWithFade(rec.layout);
     }
     this.release(400);
     this.refreshView();
@@ -247,6 +318,21 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     if (!rec)
       return;
     rec.name = newName;
+    this.saveSettings();
+    this.refreshView();
+  }
+  reorderSplits(fromId, toId, insertBefore) {
+    const splits = this.settings.splits;
+    const fromIdx = splits.findIndex((s) => s.id === fromId);
+    if (fromIdx === -1) return;
+    const [dragged] = splits.splice(fromIdx, 1);
+    const toIdx = splits.findIndex((s) => s.id === toId);
+    if (toIdx === -1) {
+      splits.splice(fromIdx, 0, dragged);
+      return;
+    }
+    const insertIdx = insertBefore ? toIdx : toIdx + 1;
+    splits.splice(insertIdx, 0, dragged);
     this.saveSettings();
     this.refreshView();
   }
@@ -264,13 +350,13 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
       this.settings.activeSplitId = (_c = next == null ? void 0 : next.id) != null ? _c : null;
       if (next)
         this.expandedSplits.add(next.id);
-      await this.saveSettings();
+      this.saveExpandedState();
       if (next == null ? void 0 : next.layout) {
-        this.app.workspace.changeLayout(next.layout);
+        await this.applyLayoutWithFade(next.layout);
       }
       this.release(400);
     } else {
-      await this.saveSettings();
+      this.saveExpandedState();
     }
     this.refreshView();
   }
@@ -323,6 +409,8 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
     // Drag state — shared across all tab rows rendered in one refresh cycle
     this._dragLeaf = null;
     this._dragGroup = null;
+    // Drag state for split reordering
+    this._dragSplitId = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -412,6 +500,7 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
       } else {
         this.plugin.expandedSplits.add(split.id);
       }
+      this.plugin.saveExpandedState();
       this.refresh();
     });
     hdr.addEventListener("click", (e) => {
@@ -427,6 +516,7 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
         } else {
           this.plugin.expandedSplits.add(split.id);
         }
+        this.plugin.saveExpandedState();
         this.refresh();
       }
     });
@@ -437,6 +527,42 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
     hdr.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       this.showSplitMenu(e, split);
+    });
+    // ── Split drag-to-reorder ─────────────────────────────────────────────
+    hdr.setAttribute("draggable", "true");
+    hdr.addEventListener("dragstart", (e) => {
+      var _a;
+      this._dragSplitId = split.id;
+      (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", "");
+      requestAnimationFrame(() => item.addClass("ss-split-item--dragging"));
+    });
+    hdr.addEventListener("dragend", () => {
+      item.removeClass("ss-split-item--dragging");
+      this._dragSplitId = null;
+    });
+    item.addEventListener("dragover", (e) => {
+      if (!this._dragSplitId || this._dragSplitId === split.id) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      const rect = hdr.getBoundingClientRect();
+      const above = e.clientY < rect.top + rect.height / 2;
+      item.toggleClass("ss-split-item--drop-before", above);
+      item.toggleClass("ss-split-item--drop-after", !above);
+    });
+    item.addEventListener("dragleave", (e) => {
+      if (!item.contains(e.relatedTarget)) {
+        item.removeClass("ss-split-item--drop-before");
+        item.removeClass("ss-split-item--drop-after");
+      }
+    });
+    item.addEventListener("drop", (e) => {
+      e.preventDefault();
+      item.removeClass("ss-split-item--drop-before");
+      item.removeClass("ss-split-item--drop-after");
+      if (!this._dragSplitId || this._dragSplitId === split.id) return;
+      const rect = hdr.getBoundingClientRect();
+      const insertBefore = e.clientY < rect.top + rect.height / 2;
+      this.plugin.reorderSplits(this._dragSplitId, split.id, insertBefore);
     });
     if (isExpanded) {
       if (isActive) {
@@ -639,14 +765,14 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
       (0, import_obsidian.setIcon)(iconEl, "file");
     }
     row.createDiv({ cls: "ss-tab-title" }).setText(tab.title);
-    row.addEventListener("click", () => this.plugin.switchToSplit(splitId));
+    row.addEventListener("click", () => this.plugin.switchToSplitAndOpenFile(splitId, tab.filePath));
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       const menu = new import_obsidian.Menu();
       menu.addItem((i) => {
         i.setTitle("Open this split");
         i.setIcon("panels-top-left");
-        i.onClick(() => this.plugin.switchToSplit(splitId));
+        i.onClick(() => this.plugin.switchToSplitAndOpenFile(splitId, tab.filePath));
       });
       menu.showAtMouseEvent(e);
     });
