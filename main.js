@@ -136,6 +136,8 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
      * don't cancel each other out.
      */
     this._suppressCount = 0;
+    /** Pending debounce timer for autoSaveActiveSplit. */
+    this._autoSaveTimer = void 0;
     /**
      * Which splits are currently expanded in the widget.
      * Lives on the plugin (not the view) so it survives view recreation
@@ -160,7 +162,7 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         if (this._suppressCount === 0)
-          this.autoSaveActiveSplit();
+          this.scheduleAutoSave();
         this.refreshView();
       })
     );
@@ -226,19 +228,54 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     this.expandedSplits.add(split.id);
     this.saveExpandedState();
   }
-  /** Snapshot the current workspace into whichever split is active. */
-  autoSaveActiveSplit() {
+  /** Debounce wrapper — waits 500 ms of quiet before actually writing. */
+  scheduleAutoSave() {
+    if (this._autoSaveTimer !== void 0)
+      clearTimeout(this._autoSaveTimer);
+    this._autoSaveTimer = window.setTimeout(() => {
+      this._autoSaveTimer = void 0;
+      this.autoSaveActiveSplit();
+    }, 500);
+  }
+  /** Snapshot the current workspace into the active split.
+   *  Reads from disk first so that external changes written by Obsidian Sync
+   *  (e.g. renamed splits, new splits from another device) are preserved
+   *  rather than overwritten by stale in-memory state. */
+  async autoSaveActiveSplit() {
     if (!this.settings.activeSplitId)
       return;
-    const rec = this.settings.splits.find((s) => s.id === this.settings.activeSplitId);
-    if (rec) {
-      rec.layout = this.app.workspace.getLayout();
-      this.saveSettings();
+    const currentLayout = this.app.workspace.getLayout();
+    // Read the latest on-disk state so Sync changes aren't clobbered.
+    const diskData = await this.loadData() ?? {};
+    const diskSplits = Array.isArray(diskData.splits) ? diskData.splits : [];
+    // Update only the active split's layout; leave everything else (names, order, etc.) as-is on disk.
+    let found = false;
+    const mergedSplits = diskSplits.map((s) => {
+      if (s.id === this.settings.activeSplitId) {
+        found = true;
+        return { ...s, layout: currentLayout };
+      }
+      return s;
+    });
+    // If the active split doesn't exist on disk yet (e.g. just created), append it from memory.
+    if (!found) {
+      const memRec = this.settings.splits.find((s) => s.id === this.settings.activeSplitId);
+      if (memRec)
+        mergedSplits.push({ ...memRec, layout: currentLayout });
     }
+    const merged = {
+      ...diskData,
+      splits: mergedSplits,
+      activeSplitId: this.settings.activeSplitId,
+      expandedSplitIds: Array.from(this.expandedSplits),
+    };
+    // Bring in-memory state in line with disk so future operations see the latest.
+    this.settings = merged;
+    await this.saveData(this.settings);
   }
   /** Create a brand-new empty split and switch to it immediately. */
   async createNewSplit() {
-    this.autoSaveActiveSplit();
+    await this.autoSaveActiveSplit();
     const newSplit = {
       id: generateId(),
       name: `Split ${this.settings.splits.length + 1}`,
@@ -287,7 +324,7 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     const rec = this.settings.splits.find((s) => s.id === id);
     if (!rec) return;
     if (id !== this.settings.activeSplitId) {
-      this.autoSaveActiveSplit();
+      await this.autoSaveActiveSplit();
       this.suppress();
       this.settings.activeSplitId = id;
       this.expandedSplits.add(id);
@@ -307,7 +344,7 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     const rec = this.settings.splits.find((s) => s.id === id);
     if (!rec)
       return;
-    this.autoSaveActiveSplit();
+    await this.autoSaveActiveSplit();
     this.suppress();
     this.settings.activeSplitId = id;
     this.expandedSplits.add(id);
