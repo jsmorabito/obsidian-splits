@@ -6,5 +6,5 @@
   "description": "A sidebar widget to manage, name, and switch between workspace splits (layouts). View all open leaves and their tabs at a glance.",
   "author": "John",
   "authorUrl": "",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }

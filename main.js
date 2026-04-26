@@ -158,6 +158,7 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
   }
   // ── Lifecycle ─────────────────────────────────────────────────────────────
   async onload() {
+    if (import_obsidian.Platform.isMobile) return;
     await this.loadSettings();
     this.registerView(VIEW_TYPE, (leaf) => new SplitSwitcherView(leaf, this));
     this.addRibbonIcon("panels-top-left", "Splits", () => this.activateView());
