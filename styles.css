@@ -272,6 +272,21 @@
   box-shadow: inset 0 -2px 0 0 var(--color-accent);
 }
 
+/* Leaf section highlighted as cross-split drop target */
+.ss-leaf--drop-target {
+  border-radius: var(--radius-s);
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/* Split header highlighted as tab drop target */
+.ss-split-hdr--tab-drop {
+  background: var(--background-modifier-hover) !important;
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-s);
+}
+
 /* Saved tab (non-active split) — slightly dimmer, no close button */
 .ss-tab--saved {
   opacity: 0.75;

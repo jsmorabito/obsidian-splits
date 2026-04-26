@@ -106,6 +106,17 @@ function setActiveTabInLayout(layout, filePath) {
   findAndSet(clone.main);
   return clone;
 }
+/** Collect the raw 'tabs' nodes from a saved layout JSON tree (mutable refs). */
+function collectLayoutTabNodes(layout) {
+  const out = [];
+  function traverse(node) {
+    if (!node) return;
+    if (node.type === "tabs") { out.push(node); return; }
+    if (Array.isArray(node.children)) node.children.forEach((c) => traverse(c));
+  }
+  traverse(layout == null ? void 0 : layout.main);
+  return out;
+}
 function emptyMainLayout(baseLayout) {
   return {
     ...baseLayout,
@@ -378,6 +389,161 @@ var SplitSwitcherPlugin = class extends import_obsidian.Plugin {
     this.saveSettings();
     this.refreshView();
   }
+  /**
+   * Move a tab from one saved split's layout to another.
+   * fromLeafIdx / toLeafIdx are the leaf-group indices within each split's layout.
+   * insertBeforeFilePath: if provided, insert before that file; otherwise append.
+   */
+  /**
+   * Add a live workspace tab to a saved split's layout (appended to leafIdx 0).
+   * Closes the live leaf from the workspace after adding it.
+   */
+  async moveLiveTabToSavedSplit(leaf, toSplitId, toLeafIdx = 0, targetFilePath = null, insertBefore = false) {
+    const toRec = this.settings.splits.find((s) => s.id === toSplitId);
+    if (!toRec) return;
+    const state = leaf.getViewState();
+    if (!state || state.type === VIEW_TYPE) return;
+    // Build a layout leaf node matching Obsidian's format
+    const tabNode = {
+      id: generateId(),
+      type: "leaf",
+      state: {
+        type: state.type,
+        state: state.state != null ? state.state : {},
+        title: leaf.view ? leaf.view.getDisplayText() : "",
+        icon: leaf.view ? leaf.view.getIcon() : "",
+      }
+    };
+    if (!toRec.layout) {
+      toRec.layout = emptyMainLayout(this.app.workspace.getLayout());
+    }
+    const toGroups = collectLayoutTabNodes(toRec.layout);
+    if (toGroups.length === 0) return;
+    const toGroup = toGroups[toLeafIdx] || toGroups[0];
+    // Insert at specific position if targetFilePath given, otherwise append
+    if (targetFilePath) {
+      const targetIdx = toGroup.children.findIndex(
+        (c) => c.type === "leaf" && c.state && c.state.state && c.state.state.file === targetFilePath
+      );
+      if (targetIdx !== -1) {
+        toGroup.children.splice(insertBefore ? targetIdx : targetIdx + 1, 0, tabNode);
+      } else {
+        toGroup.children.push(tabNode);
+      }
+    } else {
+      toGroup.children.push(tabNode);
+    }
+    // Close the live leaf
+    leaf.detach();
+    await this.saveSettings();
+    this.refreshView();
+  }
+  /**
+   * Open a saved tab in a specific live WorkspaceTabs group and remove it from
+   * its source saved-split layout.
+   */
+  async moveSavedTabToActiveLeaf(fromSplitId, fromLeafIdx, tabFilePath, targetGroup, targetLeaf = null, insertBefore = false) {
+    const fromRec = this.settings.splits.find((s) => s.id === fromSplitId);
+    if (!fromRec || !fromRec.layout) return;
+    // Remove from source saved layout
+    const fromGroups = collectLayoutTabNodes(fromRec.layout);
+    const fromGroup = fromGroups[fromLeafIdx];
+    if (fromGroup) {
+      const idx = fromGroup.children.findIndex(
+        (c) => c.type === "leaf" && c.state && c.state.state && c.state.state.file === tabFilePath
+      );
+      if (idx !== -1) fromGroup.children.splice(idx, 1);
+    }
+    // Determine insertion index within the target group
+    let insertIdx = targetGroup.children.length;
+    if (targetLeaf) {
+      const leafIdx = targetGroup.children.indexOf(targetLeaf);
+      if (leafIdx !== -1) insertIdx = insertBefore ? leafIdx : leafIdx + 1;
+    }
+    // Open file at the correct position in the target group
+    const file = this.app.vault.getAbstractFileByPath(tabFilePath);
+    if (file) {
+      let newLeaf;
+      if (typeof this.app.workspace.createLeafInParent === "function") {
+        newLeaf = this.app.workspace.createLeafInParent(targetGroup, insertIdx);
+      } else {
+        newLeaf = this.app.workspace.getLeaf("tab");
+      }
+      await newLeaf.openFile(file);
+    }
+    await this.saveSettings();
+    this.refreshView();
+  }
+  /** Move a saved tab back into the live workspace (when target is the active split). */
+  async moveSavedTabToActiveWorkspace(fromSplitId, fromLeafIdx, tabFilePath) {
+    const fromRec = this.settings.splits.find((s) => s.id === fromSplitId);
+    if (!fromRec || !fromRec.layout) return;
+    // Remove from source saved layout
+    const fromGroups = collectLayoutTabNodes(fromRec.layout);
+    const fromGroup = fromGroups[fromLeafIdx];
+    if (fromGroup) {
+      const idx = fromGroup.children.findIndex(
+        (c) => c.type === "leaf" && c.state && c.state.state && c.state.state.file === tabFilePath
+      );
+      if (idx !== -1) fromGroup.children.splice(idx, 1);
+    }
+    // Open the file in the active workspace
+    const file = this.app.vault.getAbstractFileByPath(tabFilePath);
+    if (file) {
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.openFile(file);
+    }
+    await this.saveSettings();
+    this.refreshView();
+  }
+  moveSavedTabBetweenSplits(fromSplitId, fromLeafIdx, tabFilePath, toSplitId, toLeafIdx, targetFilePath, insertBefore) {
+    if (fromSplitId === toSplitId) return;
+    // If the target is the active split, open in workspace instead of editing JSON
+    if (toSplitId === this.settings.activeSplitId) {
+      this.moveSavedTabToActiveWorkspace(fromSplitId, fromLeafIdx, tabFilePath);
+      return;
+    }
+    const fromRec = this.settings.splits.find((s) => s.id === fromSplitId);
+    const toRec = this.settings.splits.find((s) => s.id === toSplitId);
+    if (!fromRec || !toRec) return;
+    // For the active split the layout is stale — snapshot first
+    const fromLayout = fromSplitId === this.settings.activeSplitId
+      ? this.app.workspace.getLayout()
+      : fromRec.layout;
+    const toLayout = toSplitId === this.settings.activeSplitId
+      ? this.app.workspace.getLayout()
+      : toRec.layout;
+    if (!fromLayout || !toLayout) return;
+    const fromGroups = collectLayoutTabNodes(fromLayout);
+    const toGroups = collectLayoutTabNodes(toLayout);
+    const fromGroup = fromGroups[fromLeafIdx];
+    const toGroup = toGroups[toLeafIdx];
+    if (!fromGroup || !toGroup) return;
+    // Find and remove from source
+    const tabIdx = fromGroup.children.findIndex(
+      (c) => c.type === "leaf" && c.state && c.state.state && c.state.state.file === tabFilePath
+    );
+    if (tabIdx === -1) return;
+    const [tabNode] = fromGroup.children.splice(tabIdx, 1);
+    // Insert at the correct position in target
+    if (targetFilePath) {
+      const targetIdx = toGroup.children.findIndex(
+        (c) => c.type === "leaf" && c.state && c.state.state && c.state.state.file === targetFilePath
+      );
+      if (targetIdx !== -1) {
+        toGroup.children.splice(insertBefore ? targetIdx : targetIdx + 1, 0, tabNode);
+      } else {
+        toGroup.children.push(tabNode);
+      }
+    } else {
+      toGroup.children.push(tabNode);
+    }
+    // Persist both updated layouts
+    fromRec.layout = fromLayout;
+    toRec.layout = toLayout;
+    this.saveSettings();
+    this.refreshView();
+  }
   async deleteSplit(id) {
     var _a, _b, _c;
     const idx = this.settings.splits.findIndex((s) => s.id === id);
@@ -453,6 +619,10 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
     this._dragGroup = null;
     // Drag state for split reordering
     this._dragSplitId = null;
+    // Drag state for saved tab rows (cross-split drag)
+    this._dragSavedSplit = null;
+    this._dragSavedLeafIdx = null;
+    this._dragSavedTab = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -583,28 +753,54 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
       this._dragSplitId = null;
     });
     item.addEventListener("dragover", (e) => {
-      if (!this._dragSplitId || this._dragSplitId === split.id) return;
+      // Split reorder
+      if (this._dragSplitId && this._dragSplitId !== split.id) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        const rect = hdr.getBoundingClientRect();
+        const above = e.clientY < rect.top + rect.height / 2;
+        item.toggleClass("ss-split-item--drop-before", above);
+        item.toggleClass("ss-split-item--drop-after", !above);
+        return;
+      }
+      // Tab drop onto this split header
+      const hasSaved = this._dragSavedTab && this._dragSavedSplit !== split.id;
+      // Live tabs can only move to non-active splits (active split owns the live workspace)
+      const hasLive = !!this._dragLeaf && split.id !== this.plugin.settings.activeSplitId;
+      if (!hasSaved && !hasLive) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-      const rect = hdr.getBoundingClientRect();
-      const above = e.clientY < rect.top + rect.height / 2;
-      item.toggleClass("ss-split-item--drop-before", above);
-      item.toggleClass("ss-split-item--drop-after", !above);
+      hdr.addClass("ss-split-hdr--tab-drop");
     });
     item.addEventListener("dragleave", (e) => {
       if (!item.contains(e.relatedTarget)) {
         item.removeClass("ss-split-item--drop-before");
         item.removeClass("ss-split-item--drop-after");
+        hdr.removeClass("ss-split-hdr--tab-drop");
       }
     });
     item.addEventListener("drop", (e) => {
       e.preventDefault();
       item.removeClass("ss-split-item--drop-before");
       item.removeClass("ss-split-item--drop-after");
-      if (!this._dragSplitId || this._dragSplitId === split.id) return;
-      const rect = hdr.getBoundingClientRect();
-      const insertBefore = e.clientY < rect.top + rect.height / 2;
-      this.plugin.reorderSplits(this._dragSplitId, split.id, insertBefore);
+      hdr.removeClass("ss-split-hdr--tab-drop");
+      // Split reorder
+      if (this._dragSplitId && this._dragSplitId !== split.id) {
+        const rect = hdr.getBoundingClientRect();
+        const insertBefore = e.clientY < rect.top + rect.height / 2;
+        this.plugin.reorderSplits(this._dragSplitId, split.id, insertBefore);
+        return;
+      }
+      // Tab drop
+      if (this._dragSavedTab && this._dragSavedSplit !== split.id) {
+        this.plugin.moveSavedTabBetweenSplits(
+          this._dragSavedSplit, this._dragSavedLeafIdx,
+          this._dragSavedTab.filePath,
+          split.id, 0, null, false
+        );
+      } else if (this._dragLeaf) {
+        this.plugin.moveLiveTabToSavedSplit(this._dragLeaf, split.id);
+      }
     });
     if (isExpanded) {
       if (isActive) {
@@ -658,6 +854,36 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
       if (count === 0) {
         tabsEl.createDiv({ cls: "ss-tab-empty-msg", text: "Empty pane" });
       }
+      // ── Leaf-level drop zone: cross-group live drags AND saved-tab drops ──
+      leafEl.addEventListener("dragover", (e) => {
+        const hasLive = this._dragLeaf && this._dragGroup !== group;
+        const hasSaved = !!this._dragSavedTab;
+        if (!hasLive && !hasSaved) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        leafEl.addClass("ss-leaf--drop-target");
+      });
+      leafEl.addEventListener("dragleave", (e) => {
+        if (!leafEl.contains(e.relatedTarget)) {
+          leafEl.removeClass("ss-leaf--drop-target");
+        }
+      });
+      leafEl.addEventListener("drop", (e) => {
+        leafEl.removeClass("ss-leaf--drop-target");
+        const hasLive = this._dragLeaf && this._dragGroup !== group;
+        const hasSaved = !!this._dragSavedTab;
+        if (!hasLive && !hasSaved) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (hasSaved) {
+          this.plugin.moveSavedTabToActiveLeaf(
+            this._dragSavedSplit, this._dragSavedLeafIdx,
+            this._dragSavedTab.filePath, group
+          );
+        } else {
+          this.moveLeafBetweenGroups(this._dragGroup, group, this._dragLeaf, null, false);
+        }
+      });
     });
   }
   // ── Non-active split: tabs parsed from saved layout ───────────────────────
@@ -674,11 +900,40 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
       const tabsEl = leafEl.createDiv({ cls: "ss-leaf-tabs" });
       if (group.tabs.length === 0) {
         tabsEl.createDiv({ cls: "ss-tab-empty-msg", text: "Empty pane" });
-        return;
+      } else {
+        for (const tab of group.tabs) {
+          this.renderSavedTabRow(tabsEl, tab, split.id, i);
+        }
       }
-      for (const tab of group.tabs) {
-        this.renderSavedTabRow(tabsEl, tab, split.id);
-      }
+      // ── Leaf-level drop zone (append to end of this leaf group) ──────────
+      leafEl.addEventListener("dragover", (e) => {
+        const hasSaved = this._dragSavedTab && this._dragSavedSplit !== split.id;
+        const hasLive = !!this._dragLeaf && split.id !== this.plugin.settings.activeSplitId;
+        if (!hasSaved && !hasLive) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        leafEl.addClass("ss-leaf--drop-target");
+      });
+      leafEl.addEventListener("dragleave", (e) => {
+        if (!leafEl.contains(e.relatedTarget)) leafEl.removeClass("ss-leaf--drop-target");
+      });
+      leafEl.addEventListener("drop", (e) => {
+        leafEl.removeClass("ss-leaf--drop-target");
+        const hasSaved = this._dragSavedTab && this._dragSavedSplit !== split.id;
+        const hasLive = !!this._dragLeaf && split.id !== this.plugin.settings.activeSplitId;
+        if (!hasSaved && !hasLive) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (hasSaved) {
+          this.plugin.moveSavedTabBetweenSplits(
+            this._dragSavedSplit, this._dragSavedLeafIdx,
+            this._dragSavedTab.filePath,
+            split.id, i, null, false
+          );
+        } else {
+          this.plugin.moveLiveTabToSavedSplit(this._dragLeaf, split.id, i);
+        }
+      });
     });
   }
   // ── Live tab row (active split) — with drag-to-reorder ───────────────────
@@ -746,10 +1001,12 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
       this._dragGroup = null;
     });
     row.addEventListener("dragover", (e) => {
-      if (!this._dragLeaf || this._dragGroup !== group || this._dragLeaf === leaf)
-        return;
+      const hasLive = this._dragLeaf && this._dragLeaf !== leaf;
+      const hasSaved = !!this._dragSavedTab;
+      if (!hasLive && !hasSaved) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
       const rect = row.getBoundingClientRect();
       const above = e.clientY < rect.top + rect.height / 2;
       row.toggleClass("ss-tab--drop-before", above);
@@ -760,14 +1017,27 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
       row.removeClass("ss-tab--drop-after");
     });
     row.addEventListener("drop", (e) => {
-      e.preventDefault();
       row.removeClass("ss-tab--drop-before");
       row.removeClass("ss-tab--drop-after");
-      if (!this._dragLeaf || this._dragGroup !== group || this._dragLeaf === leaf)
-        return;
+      const hasLive = this._dragLeaf && this._dragLeaf !== leaf;
+      const hasSaved = !!this._dragSavedTab;
+      if (!hasLive && !hasSaved) return;
+      e.preventDefault();
+      e.stopPropagation();
       const rect = row.getBoundingClientRect();
       const insertBefore = e.clientY < rect.top + rect.height / 2;
-      this.reorderLeaves(group, this._dragLeaf, leaf, insertBefore);
+      if (hasSaved) {
+        this.plugin.moveSavedTabToActiveLeaf(
+          this._dragSavedSplit, this._dragSavedLeafIdx,
+          this._dragSavedTab.filePath, group, leaf, insertBefore
+        );
+      } else {
+        if (this._dragGroup === group) {
+          this.reorderLeaves(group, this._dragLeaf, leaf, insertBefore);
+        } else {
+          this.moveLeafBetweenGroups(this._dragGroup, group, this._dragLeaf, leaf, insertBefore);
+        }
+      }
     });
     return true;
   }
@@ -797,9 +1067,83 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
     }
     this.app.workspace.trigger("layout-change");
   }
+  // ── Move a leaf from one WorkspaceTabs group to another ──────────────────
+  moveLeafBetweenGroups(sourceGroup, targetGroup, draggedLeaf, targetLeaf, insertBefore) {
+    if (!sourceGroup || !targetGroup || sourceGroup === targetGroup) return;
+    // Capture DOM parents before any mutations
+    const sourceTabStrip = draggedLeaf.tabHeaderEl ? draggedLeaf.tabHeaderEl.parentElement : null;
+    const targetTabStrip = targetLeaf
+      ? (targetLeaf.tabHeaderEl ? targetLeaf.tabHeaderEl.parentElement : null)
+      : (targetGroup.children.length > 0 && targetGroup.children[0].tabHeaderEl
+          ? targetGroup.children[0].tabHeaderEl.parentElement
+          : null);
+    const sourceContentEl = draggedLeaf.containerEl ? draggedLeaf.containerEl.parentElement : null;
+    const targetContentEl = targetLeaf
+      ? (targetLeaf.containerEl ? targetLeaf.containerEl.parentElement : null)
+      : (targetGroup.children.length > 0 && targetGroup.children[0].containerEl
+          ? targetGroup.children[0].containerEl.parentElement
+          : null);
+    // 1. Remove from source
+    const fromIdx = sourceGroup.children.indexOf(draggedLeaf);
+    if (fromIdx === -1) return;
+    sourceGroup.children.splice(fromIdx, 1);
+    // 2. Clamp source currentTab
+    if (sourceGroup.children.length > 0) {
+      sourceGroup.currentTab = Math.min(
+        sourceGroup.currentTab != null ? sourceGroup.currentTab : 0,
+        sourceGroup.children.length - 1
+      );
+    } else {
+      sourceGroup.currentTab = 0;
+    }
+    // 3. Insert into target
+    const toIdx = targetLeaf ? targetGroup.children.indexOf(targetLeaf) : -1;
+    const insertIdx = toIdx === -1
+      ? targetGroup.children.length
+      : (insertBefore ? toIdx : toIdx + 1);
+    targetGroup.children.splice(insertIdx, 0, draggedLeaf);
+    targetGroup.currentTab = insertIdx;
+    // 4. Re-parent the leaf
+    draggedLeaf.parent = targetGroup;
+    // 5. Move containerEl to target content container
+    if (draggedLeaf.containerEl && targetContentEl) {
+      targetContentEl.appendChild(draggedLeaf.containerEl);
+    }
+    // 6. Re-sync source tab header DOM
+    if (sourceTabStrip) {
+      for (const leaf of sourceGroup.children) {
+        if (leaf.tabHeaderEl) sourceTabStrip.appendChild(leaf.tabHeaderEl);
+      }
+    }
+    // 7. Move tab header to target strip and re-sync order
+    if (targetTabStrip && draggedLeaf.tabHeaderEl) {
+      targetTabStrip.appendChild(draggedLeaf.tabHeaderEl);
+      for (const leaf of targetGroup.children) {
+        if (leaf.tabHeaderEl) targetTabStrip.appendChild(leaf.tabHeaderEl);
+      }
+    }
+    // 8. Re-sync source content container order (keeps display state consistent)
+    if (sourceContentEl) {
+      for (const leaf of sourceGroup.children) {
+        if (leaf.containerEl) sourceContentEl.appendChild(leaf.containerEl);
+      }
+    }
+    // 9. Re-sync target content container order
+    if (targetContentEl) {
+      for (const leaf of targetGroup.children) {
+        if (leaf.containerEl) targetContentEl.appendChild(leaf.containerEl);
+      }
+    }
+    // 10. Make moved leaf active so Obsidian renders it in its new group
+    this.app.workspace.setActiveLeaf(draggedLeaf, { focus: false });
+    this.app.workspace.trigger("layout-change");
+  }
   // ── Saved tab row (non-active split) — clicking switches to that split ────
-  renderSavedTabRow(container, tab, splitId) {
-    const row = container.createDiv({ cls: "ss-tab ss-tab--saved tree-item-self is-clickable" });
+  renderSavedTabRow(container, tab, splitId, leafIdx) {
+    const row = container.createDiv({
+      cls: "ss-tab ss-tab--saved tree-item-self is-clickable",
+      attr: { draggable: "true" }
+    });
     const iconEl = row.createDiv({ cls: "ss-tab-icon" });
     try {
       (0, import_obsidian.setIcon)(iconEl, tab.icon);
@@ -817,6 +1161,61 @@ var SplitSwitcherView = class extends import_obsidian.ItemView {
         i.onClick(() => this.plugin.switchToSplitAndOpenFile(splitId, tab.filePath));
       });
       menu.showAtMouseEvent(e);
+    });
+    // ── Drag to move between splits ────────────────────────────────────────
+    row.addEventListener("dragstart", (e) => {
+      var _a;
+      this._dragSavedSplit = splitId;
+      this._dragSavedLeafIdx = leafIdx;
+      this._dragSavedTab = tab;
+      (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", "");
+      requestAnimationFrame(() => row.addClass("ss-tab--dragging"));
+    });
+    row.addEventListener("dragend", () => {
+      row.removeClass("ss-tab--dragging");
+      this._dragSavedSplit = null;
+      this._dragSavedLeafIdx = null;
+      this._dragSavedTab = null;
+    });
+    // Accept drops from other saved splits or the active split — insert before/after this tab
+    row.addEventListener("dragover", (e) => {
+      const hasSaved = !!this._dragSavedTab && this._dragSavedSplit !== splitId && this._dragSavedTab !== tab;
+      const hasLive = !!this._dragLeaf && splitId !== this.plugin.settings.activeSplitId;
+      if (!hasSaved && !hasLive) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      const rect = row.getBoundingClientRect();
+      const above = e.clientY < rect.top + rect.height / 2;
+      row.toggleClass("ss-tab--drop-before", above);
+      row.toggleClass("ss-tab--drop-after", !above);
+    });
+    row.addEventListener("dragleave", () => {
+      row.removeClass("ss-tab--drop-before");
+      row.removeClass("ss-tab--drop-after");
+    });
+    row.addEventListener("drop", (e) => {
+      row.removeClass("ss-tab--drop-before");
+      row.removeClass("ss-tab--drop-after");
+      const hasSaved = !!this._dragSavedTab && this._dragSavedSplit !== splitId && this._dragSavedTab !== tab;
+      const hasLive = !!this._dragLeaf && splitId !== this.plugin.settings.activeSplitId;
+      if (!hasSaved && !hasLive) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = row.getBoundingClientRect();
+      const insertBefore = e.clientY < rect.top + rect.height / 2;
+      if (hasSaved) {
+        this.plugin.moveSavedTabBetweenSplits(
+          this._dragSavedSplit, this._dragSavedLeafIdx,
+          this._dragSavedTab.filePath,
+          splitId, leafIdx,
+          tab.filePath, insertBefore
+        );
+      } else {
+        this.plugin.moveLiveTabToSavedSplit(
+          this._dragLeaf, splitId, leafIdx, tab.filePath, insertBefore
+        );
+      }
     });
   }
 };
